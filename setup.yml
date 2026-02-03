@@ -3,89 +3,122 @@
   hosts: all
   become: yes
   tasks:
-    - name: Disable SELinux
-      selinux: state=disabled
+    - name: Disable SELinux (RedHat family only)
+      selinux:
+        state: disabled
       when: ansible_os_family == "RedHat"
-    - name: Stop Firewalls
+
+    - name: Stop and disable firewall if present
       service:
-        name: "{{ (ansible_os_family == 'RedHat') | ternary('firewalld', 'ufw') }}"
+        name: "{{ ansible_os_family == 'RedHat' | ternary('firewalld', 'ufw') }}"
         state: stopped
         enabled: no
       ignore_errors: yes
 
+# ---------------- BACKEND ----------------
 - name: Configure Backend (Netdata)
   hosts: backend
   become: yes
   tasks:
-    - name: Install Netdata
-      shell: "wget -O /tmp/kickstart.sh https://get.netdata.cloud/kickstart.sh && sh /tmp/kickstart.sh --non-interactive"
-    - name: Ensure Port 19999
+    - name: Install Netdata (only if not installed)
+      shell: |
+        wget -O /tmp/kickstart.sh https://get.netdata.cloud/kickstart.sh
+        sh /tmp/kickstart.sh --non-interactive
+      args:
+        creates: /usr/sbin/netdata
+
+    - name: Ensure Netdata runs on port 19999
       lineinfile:
         path: /etc/netdata/netdata.conf
-        regexp: 'default port = '
+        regexp: '^\\s*default port ='
         line: '    default port = 19999'
       notify: Restart Netdata
+
   handlers:
     - name: Restart Netdata
-      service: name=netdata state=restarted
+      service:
+        name: netdata
+        state: restarted
 
+# ---------------- FRONTEND ----------------
 - name: Configure Frontend (Nginx Proxy)
   hosts: frontend
   become: yes
+  vars:
+    backend_ip: "{{ hostvars[groups['backend'][0]].ansible_host | default(groups['backend'][0]) }}"
+
   tasks:
     - name: Install Nginx
-      package: name=nginx state=present
+      package:
+        name: nginx
+        state: present
 
-    - name: Stop Nginx to clear Port 80
-      service: name=nginx state=stopped
-      ignore_errors: yes
-
-    - name: Force kill any process on Port 80
-      shell: fuser -k 80/tcp || true
-
-    - name: Wipe and Recreate conf.d directory
+    - name: Reset nginx conf.d directory
       file:
         path: /etc/nginx/conf.d
-        state: "{{ item }}"
-      with_items: [ 'absent', 'directory' ]
+        state: directory
+        mode: '0755'
 
-    - name: Write Clean nginx.conf
+    - name: Write clean nginx.conf
       copy:
         dest: /etc/nginx/nginx.conf
+        mode: '0644'
         content: |
           user nginx;
           worker_processes auto;
-          error_log /var/log/nginx/error.log;
+          error_log /var/log/nginx/error.log warn;
           pid /run/nginx.pid;
-          events { worker_connections 1024; }
+
+          events {
+              worker_connections 1024;
+          }
+
           http {
-              include /etc/nginx/mime.types;
-              default_type application/octet-stream;
-              access_log /var/log/nginx/access.log;
-              sendfile on;
+              include       /etc/nginx/mime.types;
+              default_type  application/octet-stream;
+
+              log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                              '$status $body_bytes_sent "$http_referer" '
+                              '"$http_user_agent" "$http_x_forwarded_for"';
+
+              access_log /var/log/nginx/access.log main;
+
+              sendfile        on;
+              keepalive_timeout 65;
+
               include /etc/nginx/conf.d/*.conf;
           }
 
-    - name: Write Proxy Config
+    - name: Write proxy configuration
       copy:
         dest: /etc/nginx/conf.d/proxy.conf
+        mode: '0644'
         content: |
           server {
               listen 80 default_server;
+              server_name _;
+
               location / {
-                  proxy_pass http://{{ groups['backend'][0] }}:19999;
+                  proxy_pass http://{{ backend_ip }}:19999;
+                  proxy_http_version 1.1;
                   proxy_set_header Host $host;
                   proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
               }
           }
 
-    - name: Validate Nginx Config
+    - name: Validate nginx configuration
       command: nginx -t
-      register: config_check
+      register: nginx_test
+      changed_when: false
 
-    - name: Final Service Start
+    - name: Show nginx validation output
+      debug:
+        var: nginx_test.stderr
+
+    - name: Start and enable nginx
       service:
         name: nginx
-        state: started
+        state: restarted
         enabled: yes
-      when: config_check.rc == 0
