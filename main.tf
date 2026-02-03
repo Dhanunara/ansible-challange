@@ -1,3 +1,6 @@
+provider "aws" {
+  region = "us-east-1"
+}
 # First VM: Amazon Linux
 resource "aws_instance" "amazon_linux_vm" {
   ami           = "ami-0532be01f26a3de55" # Amazon Linux 2 AMI ID
