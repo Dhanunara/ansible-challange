@@ -13,13 +13,14 @@
         name: "{{ (ansible_os_family == 'RedHat') | ternary('firewalld', 'ufw') }}"
         state: stopped
         enabled: no
+      ignore_errors: yes # This prevents the play from failing if firewalld isn't present
 
 - name: Configure Backend (Netdata)
   hosts: backend
   become: yes
   tasks:
     - name: Install Netdata from official repo
-      shell: curl -s https://my-netdata.io/kickstart.sh | sh -s -- --non-interactive
+      shell: "wget -O /tmp/netdata-kickstart.sh https://get.netdata.cloud/kickstart.sh && sh /tmp/netdata-kickstart.sh --non-interactive"
     
     - name: Ensure Netdata runs on port 19999
       lineinfile:
