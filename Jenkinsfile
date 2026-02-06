@@ -2,8 +2,8 @@ pipeline {
     agent any
     environment {
         // These IDs must match exactly what you created in Jenkins
-        AWS_ID = 'aws-keys'
-        SSH_ID = 'ssh-key-file'
+        AWS_ID = 'aws-key'
+        SSH_ID = 'ssh-key'
     }
     stages {
         stage('Checkout') {
